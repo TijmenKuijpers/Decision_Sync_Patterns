@@ -21,47 +21,30 @@ class DataPreprocessor:
         """Load and prepare data for decision tree training."""
         # Read the state data
         df = pd.read_excel(filename)
-        df = df[df['event_id'].isin([transition, f"{transition}_constrained"])]
-        
+        df = df[df['Event'].isin([transition])]
+
         # Apply preprocessing
-        #df = self._apply_general_cleaning(df, pn, transition, pattern)
+        
         df = self._apply_pattern_specific_cleaning(df, pn, transition, pattern)
-
+        
         # Save preprocessed dataframe to excel with timestamp
-
-        #timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # Create safe transition name by replacing special characters
-        #safe_transition = transition.replace('<', '_').replace('>', '_').replace(':', '_')
-        #output_filename = f'preprocessed_{safe_transition}_{pattern}_{timestamp}.xlsx'
-        #df.to_excel(output_filename, index=False)
-        #print(f"Preprocessed data saved to: {output_filename}")
+        self.save_preprocessed_data(df, transition, pattern)
 
         # Create observation (X) and target (y) variables
         X, y = self._create_features_and_targets(df, transition)
-        
         # Print data info
         #self._print_data_info(X)
         
         return X, y
     
-    def _apply_general_cleaning(self, df, pn, transition, pattern):
-        """Apply pattern-specific data cleaning and feature engineering."""
-        # Drop columns containing 'log' in their names and time until enabled columns
-        log_columns = [col for col in df.columns if 'log' in col.lower()]
-        time_until_enabled_cols = [col for col in df.columns if col.endswith('_time_until_enabled')]
-        self.feature_drop_list.extend(log_columns)
-        self.feature_drop_list.extend(time_until_enabled_cols)
-
-        # Scan for features with only one unique value
-        for col in df.columns:
-            if col not in ['time', 'event_id'] and 'time_until_enabled':# not in col and df[col].nunique() == 1:
-                if col not in self.feature_drop_list:
-                    #print(f"Column {col} dropped: only one unique value")
-                    self.feature_drop_list.append(col)
-        
-        df = df.drop(self.feature_drop_list, axis=1)
-        return df
-    
+    def save_preprocessed_data(self, df, transition, pattern):
+        """Save preprocessed data to excel with timestamp."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_transition = transition.replace('<', '_').replace('>', '_').replace(':', '_')
+        output_filename = f'preprocessed_{safe_transition}_{pattern}_{timestamp}.xlsx'
+        df.to_excel(output_filename, index=False)
+        print(f"Preprocessed data saved to: {output_filename}")
+       
     def _apply_pattern_specific_cleaning(self, df, pn, transition, pattern):
         """Apply pattern-specific data cleaning and feature engineering."""
         # Get all places in process from pn dictionary
@@ -86,11 +69,10 @@ class DataPreprocessor:
     
     def _clean_priority_pattern(self, df, pn, transition, all_places):
         """Clean data for priority pattern."""
-        
-        print(df.columns)
 
         # Process construct valid places
         input_places = pn[transition][0]
+        
         upstream_places = set()
         for t, (ins, outs) in pn.items():
             if any(out_place in input_places for out_place in outs):
@@ -99,39 +81,37 @@ class DataPreprocessor:
         
         outscope_places = [place for place in all_places if place not in valid_places]
         outscope_cols = [col for col in df.columns if any(outscope_place in col for outscope_place in outscope_places)]
-        df = df.drop(outscope_cols, axis=1)
         
+        df = df.drop(outscope_cols, axis=1)
+
         # Create attribute ratio features
-        min_max_cols = [col for col in df.columns if col.endswith(('_min', '_max'))]
+        min_max_cols = [col for col in df.columns if 'min' in col or 'max' in col and not 'enabled' in col]
         places = list(set([col.split('_')[0] for col in min_max_cols]))
-        attributes = list(set([col.split('_')[0] for col in [col.split('_')[1] for col in min_max_cols]]))
-    
-        #print(places)
-        #print(attributes)
-        #print(df.columns)
-        print(df.columns)
+        attributes = list(set([col.split('_')[0] for col in [col.split('_')[2] for col in min_max_cols]]))
 
         for place in places: # Add a feature to check if the min or max are enabled
             if place not in pn[transition][0]:
                 continue
             for attr in attributes:
                 try:
-                    df[f'{place}_{attr}_max_is_enabled'] = df[f'{place}_{attr}_enabled_max'] == df[f'{place}_{attr}_max']
+                    df[f'{place}_{attr}_max_is_enabled'] = df[f'max_{place}_{attr}_enabled'] == df[f'max_{place}_{attr}']
                 except:
                     print(f"Error creating {place}_{attr}_max_is_enabled")
                     continue
                 try:
-                    df[f'{place}_{attr}_min_is_enabled'] = df[f'{place}_{attr}_enabled_min'] == df[f'{place}_{attr}_min']
+                    df[f'{place}_{attr}_min_is_enabled'] = df[f'min_{place}_{attr}_enabled'] == df[f'min_{place}_{attr}']
                 except:
                     print(f"Error creating {place}_{attr}_min_is_enabled")
                     continue
 
+        
         for i, col1 in enumerate(min_max_cols):
             for col2 in min_max_cols[i+1:]:
                 # Extract place names from column names
-                place1 = col1.split('_')[0]
-                place2 = col2.split('_')[0]
                 
+                place1 = col1.split('_')[1]
+                place2 = col2.split('_')[1]
+                print("this also works")
                 # Skip if both columns are from the same place
                 if place1 == place2: #and place1 not in pn[transition][0]:
                     continue
@@ -148,67 +128,64 @@ class DataPreprocessor:
             to_drop = [column for column in upper.columns if any(upper[column] > 0.95)]
             if to_drop:
                 df = df.drop(to_drop, axis=1)
-
-        # Drop irrelevant features -> keep only attribute based features
-        time_cols = [col for col in df.columns if 'time_until_next_enabled' in col] # drops time until next enabled
-        token_cols = [col for col in df.columns if 'token_count' in col] # drops (enabled) token counts
-        non_ratio_cols = [col for col in df.columns if 
-                            col not in ratio_features and 
-                            col != 'event_id' and 
-                            col != 'time' and 
-                            'enabled_min' not in col and 
-                            'enabled_max' not in col and
-                            'min_is_enabled' not in col and
-                            'max_is_enabled' not in col]
-        df = df.drop(time_cols + token_cols + non_ratio_cols, axis=1)
         
+        # Remove unnecessary columns
+        non_minmax_cols = [col for col in df.columns if 
+                           'min' not in col and 
+                           'max' not in col and 
+                           col.lower() not in ('time', 'guard alligned', 'event')]
+        
+        df = df.drop(non_minmax_cols, axis=1)
+
+        non_ratio_enabled_cols = [col for col in df.columns if 
+                                  '/' not in col and
+                                  'enabled' not in col and
+                                  col.lower() not in ('time', 'guard alligned', 'event')]
+        df = df.drop(non_ratio_enabled_cols, axis=1)
+
         return df
     
     def _clean_blocking_pattern(self, df, pn, transition, all_places):
         """Clean data for blocking pattern."""
-        # Drop irrelevant features -> keep only enabled token count and time until next enabled features
-        time_cols = [col for col in df.columns if 'time_until_next_enabled' in col]
-        token_cols = [col for col in df.columns if 'enabled_token_count' in col]
-        max_cols = [col for col in df.columns if 'max' in col]
-        min_cols = [col for col in df.columns if 'min' in col]
-        
+
         # Process construct valid places
         output_places = pn[transition][1]
         outscope_places = [place for place in all_places if place not in output_places]
-        outscope_cols = [col for col in df.columns if col.split('_')[0] in outscope_places]
+        outscope_cols = [col for col in df.columns if any(outscope_place in col for outscope_place in outscope_places)]
         
-        df = df.drop(time_cols + token_cols + max_cols + min_cols + outscope_cols, axis=1)
+        df = df.drop(outscope_cols, axis=1)
+        
+
+        # Remove irrelevant columns
+        minmaxenabled_cols = [col for col in df.columns if 'min' in col or 'max' in col or 'enabled' in col]
+        df = df.drop(minmaxenabled_cols, axis=1)
+        
         return df
     
     def _clean_hold_batch_pattern(self, df, pn, transition, all_places):
         """Clean data for hold-batch pattern."""
         
         # Remove consecutive transportation events
-        df['is_transport'] = df['event_id'] == transition #TODO this is not general for any process
+        df['is_transport'] = (df['Event'] == transition) & (df['Guard alligned'] == True)
         df['prev_transport'] = df['is_transport'].shift(1).fillna(False)
         df = df[~(df['is_transport'] & df['prev_transport'])]
         df = df.drop(['is_transport', 'prev_transport'], axis=1)
-        
-        # Drop irrelevant features -> keep only enabled token count and time until next enabled features
-        token_count_cols = [col for col in df.columns if '_token_count' in col and not '_enabled_token_count' in col]
-        max_cols = [col for col in df.columns if 'max' in col]
-        min_cols = [col for col in df.columns if 'min' in col]
-        
+
         # Process construct valid places
         input_places = pn[transition][0]
         outscope_places = [place for place in all_places if place not in input_places]
         
-        outscope_cols = [col for col in df.columns if col.split('_')[0] in outscope_places]
-        df = df.drop(token_count_cols + max_cols + min_cols + outscope_cols, axis=1)
+        outscope_cols = [col for col in df.columns if any(outscope_place in col for outscope_place in outscope_places)]
+        df = df.drop(outscope_cols, axis=1)
         
+        # Remove irrelevant columns
+        minmax_cols = [col for col in df.columns if 'min' in col or 'max' in col]
+        df = df.drop(minmax_cols, axis=1)
+
         return df
     
     def _clean_choice_pattern(self, df, pn, transition, all_places):
         """Clean data for choice pattern."""
-        # Drop irrelevant features -> keep only enabled token count and time until next enabled features
-        token_count_cols = [col for col in df.columns if '_token_count' in col and not '_enabled_token_count' in col]
-        max_cols = [col for col in df.columns if 'max' in col]
-        min_cols = [col for col in df.columns if 'min' in col]
         
         # Process construct valid places
         input_places = pn[transition][0]
@@ -221,19 +198,25 @@ class DataPreprocessor:
                     accepted_places.extend(other_input_places)
         
         outscope_places = [place for place in all_places if place not in accepted_places]
-        outscope_cols = [col for col in df.columns if col.split('_')[0] in outscope_places]
-        df = df.drop(token_count_cols + max_cols + min_cols + outscope_cols, axis=1)
+        outscope_cols = [col for col in df.columns if any(outscope_place in col for outscope_place in outscope_places)]
+        df = df.drop(outscope_cols, axis=1)
         
+
+        # Remove irrelevant columns
+        minmax_cols = [col for col in df.columns if 'min' in col or 'max' in col]
+        df = df.drop(minmax_cols, axis=1)
+
+        non_time_cols = [col for col in df.columns if 
+                        not "time" in col.lower() and
+                        col.lower() not in ('time', 'guard alligned', 'event')]
+        df = df.drop(non_time_cols, axis=1)
+
         return df
 
     def _create_features_and_targets(self, df, transition):
         """Create feature matrix X and target vector y."""
-        X = df.drop(['time', 'event_id'], axis=1)
-        if 'consumed_token_id' in X.columns:
-            X = X.drop('consumed_token_id', axis=1)
-        
-        y = df['event_id']
-        y = y.apply(lambda x: f"{transition}_guard" if f"{transition}_constrained" in str(x) else x)
+        X = df.drop(['Time', 'Event', 'Guard alligned'], axis=1)
+        y = df['Guard alligned']
 
         # Convert all columns to numeric
         for col in X.columns:
@@ -288,8 +271,10 @@ class DecisionTreeTrainer:
         # Visualize the tree if requested
         tree_filename = None
         if self.save_visualizations:
-            tree_filename = self._visualize_tree(clf, X.columns, clf.classes_, transition, pattern)
-        
+            class_names = [str(cls) for cls in clf.classes_]
+            tree_filename = self._visualize_tree(clf, X.columns, class_names, transition, pattern)
+
+
         return clf, X_train, X_test, y_train, y_test, tree_filename
     
     def _visualize_tree(self, clf, feature_names, class_names, transition, pattern):
@@ -309,10 +294,8 @@ class DecisionTreeTrainer:
         # Save the tree
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f'decision_tree_{transition}_{pattern}_{timestamp}.png'
-        
         plt.savefig(filename, dpi=self.dpi, bbox_inches='tight')
         plt.close()
-        
         print(f"Decision tree visualization saved to: {filename}")
         return filename
     
@@ -379,7 +362,7 @@ class SimulationConfig:
         
         elif "choice" in file_path:
             return {
-                'max_depth': 5,
+                'max_depth': 3,
                 'patterns': ["choice"],
                 'transitions': ["game_production"],
                 'pn': {
@@ -391,21 +374,20 @@ class SimulationConfig:
             }
         
         elif "SCM_game" or "scm_game" in file_path:
-            # Get all event IDs ending with 'constrained' from the excel file
-            df = pd.read_excel(file_path)
-            transitions = [event_id.replace('_constrained', '') for event_id in df['event_id'].unique() if str(event_id).endswith('constrained')]
+
+            transitions = ["trans phone","order game case<task:start>", "prod game", "prod phone"]
             
             return {
-                'max_depth': 2,
-                'patterns': ["priority", "blocking", "hold-batch", "choice"],
+                'max_depth': 4,
+                'patterns': ["hold-batch", "blocking", "priority", "choice"],
                 'transitions': transitions,
                 'pn': {
-                    "order phone case<task:start>": (["source phone case"], ["source phone case", "stock phone cases"]),
-                    "order chip<task:start>": (["source chip"], ["source chip", "stock chips"]),
-                    "order game case<task:start>": (["source game case"], ["source game case", "stock game cases"]),
-                    "prod phone": (["stock phone cases", "stock chips"], ["ffil phone NL"]),
-                    "prod game": (["stock chips", "stock game cases"], ["ffil game NL"]),
-                    "trans phone": (["ffil phone NL"], ["ffil phone DE"])
+                    "order phone case<task:start>": (["source_pc"], ["source_pc", "s1"]),
+                    "order chip<task:start>": (["source_c"], ["source_c", "s2"]),
+                    "order game case<task:start>": (["source_gc"], ["source_gc", "s3"]),
+                    "prod phone": (["s1", "s2"], ["d1"]),
+                    "prod game": (["s2", "s3"], ["d2"]),
+                    "trans phone": (["d1"], ["d3"])
                 }
             }
         
@@ -416,6 +398,7 @@ class DecisionTreeAnalyzer:
     """Main class that orchestrates the entire decision tree analysis process."""
     
     def __init__(self, file_path):
+        
         self.file_path = file_path
         self.config = SimulationConfig.get_config(file_path) #TODO: generalize to use allow user input
         self.decision_sync_patterns = pd.DataFrame()
@@ -425,13 +408,11 @@ class DecisionTreeAnalyzer:
         self.trainer = DecisionTreeTrainer(
             max_depth=self.config['max_depth'],
             min_samples_split=5,
-            save_visualizations=False
+            save_visualizations=True
         )
     
     def run_analysis(self):
         """Run the complete decision tree analysis."""
-        #print(f"Starting analysis for file: {self.file_path}")
-        #print(f"Configuration: {self.config}")
         
         for transition in self.config['transitions']:
             for pattern in self.config['patterns']:
@@ -461,13 +442,10 @@ class DecisionTreeAnalyzer:
                     pattern_analyzer = PatternDiscovery(
                         clf, X, self.config['pn'], transition, 
                         pattern_types=[pattern], 
-                        leaf_samples_threshold=10, 
+                        leaf_samples_threshold=1, 
                         leaf_gini_threshold=0.1,
                         gini_decrease_threshold=0.01
                     )
-
-                    # Analyze unconstrained patterns
-                    pattern_analyzer.analyze_constrained_patterns(pattern)
                     
                     # Analyze constrained patterns
                     constrained_patterns = pattern_analyzer.analyze_constrained_patterns(pattern)
@@ -484,21 +462,13 @@ class DecisionTreeAnalyzer:
 
 def main():
     """Main function to run the decision tree analysis."""
-    experiment_nr = 10
-    for i in range(1, experiment_nr+1):
-    #    print(f"Running analysis {i} of {experiment_nr}")
-        file_name = f"scm_game_log_{i}.xlsx"
-        file_path = f"C:/Users/20183272/OneDrive - TU Eindhoven/Documents/PhD IS/Papers/Decision Synchronization Patterns/Modeling/Patterns/{file_name}"
-        analyzer = DecisionTreeAnalyzer(file_path)
+    experiments = 10
+    file_save = "scm_game_log"
+    for i in range(experiments):
+        file_name = f"scm_game_structural_alignment_{file_save}_{i+1}.xlsx"
+        #file_path = f"C:/Users/20183272/OneDrive - TU Eindhoven/Documents/PhD IS/Papers/Decision Synchronization Patterns/Modeling/Patterns/SCM_game/{file_name}"
+        analyzer = DecisionTreeAnalyzer(file_name)#path)
         analyzer.run_analysis()
-        print(f"Analysis {i} completed")
-        print(f"{'='*50}")
-    
-    #file_name = "scm_game_exp2.xlsx"
-    #file_path = f"C:/Users/20183272/OneDrive - TU Eindhoven/Documents/PhD IS/Papers/Decision Synchronization Patterns/Modeling/Patterns/{file_name}"
-    #file_path = "C:/Users/20183272/OneDrive - TU Eindhoven/Documents/PhD IS/Papers/Decision Synchronization Patterns/Modeling/Patterns/priority_report_20250819_164729.xlsx"
-    #analyzer = DecisionTreeAnalyzer(file_path)
-    #analyzer.run_analysis()
 
 if __name__ == "__main__":
     main()

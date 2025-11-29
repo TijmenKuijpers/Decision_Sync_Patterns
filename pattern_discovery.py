@@ -26,6 +26,7 @@ class PatternDiscovery:
         self.leaf_samples_threshold = leaf_samples_threshold
         self.leaf_gini_threshold = leaf_gini_threshold
         self.gini_decrease_threshold = gini_decrease_threshold
+       
         # Pattern feature comparison operators
         self.direction_dict = {"priority": ["<=", ">"], 
                                "blocking": [">"], 
@@ -103,9 +104,10 @@ class PatternDiscovery:
                 class_counts = self.tree_.value[node_id][0]
                 predicted_class_idx = np.argmax(class_counts)
                 predicted_class = self.clf.classes_[predicted_class_idx]
-                
+
                 # Check if there is a guard in place
-                if isinstance(predicted_class, str) and predicted_class.endswith("guard"):
+                if str(predicted_class) == "False":
+
                     # Only add leaf if it meets sample threshold, gini threshold
                     leaf_samples = self.tree_.n_node_samples[node_id]
                     leaf_gini = self._calculate_gini(self.tree_.value[node_id][0])
@@ -134,7 +136,7 @@ class PatternDiscovery:
 
                     if comparison_operator not in allowed_operators:
                         continue
-                    
+
                     # Record splitting criteria information
                     threshold = self.tree_.threshold[node_id]
                     
@@ -145,7 +147,7 @@ class PatternDiscovery:
                     gini_decrease = current_gini - next_gini # Calculate gini decrease
                     if gini_decrease < self.gini_decrease_threshold:
                         continue
-                    
+
                     leaf_samples = self.tree_.n_node_samples[leaf_id] # Get samples and gini for leaf node
                     leaf_gini = self._calculate_gini(self.tree_.value[leaf_id][0])
                     predicted_event = self.clf.classes_[np.argmax(self.tree_.value[leaf_id][0])] # Get predicted event for leaf node
@@ -164,7 +166,7 @@ class PatternDiscovery:
                         'leaf_gini': leaf_gini,
                         'predicted_event': predicted_event,
                     })
-        
+
         # Convert to DataFrame
         empty_df = pd.DataFrame(columns=['transition', 'pattern', 'feature', 'comparison_operator', 'value', 
                                           'samples', 'gini_impurity', 'gini_decrease', 'leaf_samples', 
@@ -176,14 +178,15 @@ class PatternDiscovery:
             df = df.sort_values('gini_decrease', ascending=False) # Other conceivably good criteria: keep closest to leave node
             df = df.drop_duplicates(subset=['feature', 'predicted_event'])
             
-            # Only keep hold-batch patterns when both parts of the constraint are present
-            if pattern_type == "hold-batch":
-                time_features = df['feature'].str.contains('time_until_next_enabled')
-                token_features = df['feature'].str.contains('enabled_token_count')
-                if not (time_features.any() and token_features.any()):
+            # For priority and hold-batch patterns, ensure that there are exactly two splitting criteria
+            if pattern_type == "priority" or pattern_type == "hold-batch":
+                if len(df) != 2:
+                    print(f"Warning: pattern_type '{pattern_type}' expects exactly two splitting criteria, but found {len(df)}.")
+                    
                     return empty_df
 
             return df
+        
         else:
             return empty_df
     

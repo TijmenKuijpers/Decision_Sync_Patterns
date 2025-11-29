@@ -9,6 +9,10 @@ import pandas as pd
 import sys
 import os
 
+# Add the Patterns directory to the path to import analysis_branch
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from analysis_branch import GuardedAlignment
+
 # Add the parent directory to the path to import pattern_reporter
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pattern_reporter import PatternReporter, ProgressReporter
@@ -54,7 +58,7 @@ class SCMGameSimulation:
         self.source_c = self.SCgame.add_var("source_c")
         self.source_gc = self.SCgame.add_var("source_gc")
 
-        self.s1 = SCStock(self.SCgame, "s1", priority=lambda token: -token.value["priority"])
+        self.s1 = SCStock(self.SCgame, "s1")#, priority=lambda token: -token.value["priority"])
         self.s2 = SCStock(self.SCgame, "s2")
         self.s3 = SCStock(self.SCgame, "s3")
 
@@ -86,7 +90,7 @@ class SCMGameSimulation:
 
         # Select an action every day
         self.cturn = self.SCgame.add_var("turn")
-        self.cturn.put("demand")  
+        self.cturn.put({"demand": 0})  
         self.cturn.set_invisible()
 
         self.demand = self.SCgame.add_var("demand")
@@ -120,17 +124,17 @@ class SCMGameSimulation:
         self.o3 = SCOrder(self.SCgame, [self.source_gc], [self.source_gc, self.s3], "order game case", 
                          behavior = lambda p: [SimToken(p, delay=0)],
                          outgoing_behavior=self.game_order_outgoing_behavior, 
-                         guard=self._game_order_guard)
+                         guard=None)#self._game_order_guard)
 
         self.p1 = self.SCgame.add_event([self.s1, self.s2], [self.d1], name="prod phone",  
                          behavior=lambda s1, s2: [SimToken("ffil phone NL", delay=random.expovariate(1/phone_prod_lt) if phone_prod_uncertainty else phone_prod_lt)], 
-                         guard=self._phone_production_guard) # Produce phone cases
+                         guard=None)#self._phone_production_guard) # Produce phone cases
         self.p2 = self.SCgame.add_event([self.s2, self.s3], [self.d2], name="prod game", 
                          behavior=lambda s2, s3: [SimToken("ffil game NL", delay=random.expovariate(1/game_prod_lt) if game_prod_uncertainty else game_prod_lt)], 
-                         guard=self._game_production_guard) # Produce game cases
+                         guard=None)#self._game_production_guard) # Produce game cases
         self.t1 = self.SCgame.add_event([self.d1, self.truck], [self.d3, self.truck], name="trans phone", 
                          behavior=self._transportation,
-                         guard=self._transportation_guard) 
+                         guard=None)#self._transportation_guard) 
 
         self.ff1 = self.SCgame.add_event([self.demand, self.d1], [], lambda d, d1: [],guard=lambda d, d1: d=="ffil phone NL", name="ffill 1") #  Execute demand fulfillment
         self.ff2 = self.SCgame.add_event([self.demand, self.d2], [], lambda d, d2: [],guard=lambda d, d2: d=="ffil game NL", name="ffill 2")
@@ -142,7 +146,7 @@ class SCMGameSimulation:
 
         self.demand_event = self.SCgame.add_event([self.demand.queue, self.cturn], [self.demand.queue, self.cturn], self._demand_generator, guard=lambda p, c: c == "demand")
         self.demand_event.set_invisible()
-    
+
     def phone_order_outgoing_behavior(self, p):
         """
         The outgoing behavior of the phone order event.
@@ -153,7 +157,7 @@ class SCMGameSimulation:
 
         delay = random.expovariate(1/phone_case_lt) if phone_case_uncertainty else phone_case_lt
 
-        return [SimToken({"action": "source phone case", "priority": 1 if random.random() < 0.1 else 0}, delay=delay), SimToken(p, delay=delay)]
+        return [SimToken({"action": "source phone case", "priority": 1 if random.random() < 0.33 else 0}, delay=delay), SimToken(p, delay=delay)]
     
     def chip_order_outgoing_behavior(self, p):
         """
@@ -179,60 +183,6 @@ class SCMGameSimulation:
 
         return [SimToken(p, delay=delay), SimToken(p, delay=delay)]
     
-    #def _phone_order_guard(self, p):
-        #s1_queue = self.s1.queue.marking[0].value
-        # Blocking - if there are 3 tokens in phone case stock, block order
-        #return len(s1_queue) < 3
-
-    #def _chip_order_guard(self, p):
-        #s2_queue = self.s2.queue.marking[0].value
-        # Blocking - if there are 6 tokens in chip stock, block order
-        #return len(s2_queue) < 3
-
-    def _game_order_guard(self, p):
-        s3_queue = self.s3.queue.marking[0].value
-        # Blocking - if there are 3 tokens in game case stock, block order
-        return len(s3_queue) < 3
-
-    def _phone_production_guard(self, s1, s2):
-        # Check if there is a priority order in the queue
-        
-        all_phone_stock = self.s1.queue.marking[0].value
-        all_phone_source =self.source_pc.queue.marking[0].value
-
-        value_stock = max([token.value["priority"] for token in all_phone_stock])
-        enabled_phone_stock = [token for token in all_phone_stock if token.time <= self.SCgame.clock]
-        if len(enabled_phone_stock) > 0:
-            enabled_value_stock = max([token.value["priority"] for token in enabled_phone_stock])
-        else:
-            enabled_value_stock = 0
-        
-        if len(all_phone_source) > 0:
-            value_source = max([token.value["priority"] for token in all_phone_source])
-        else:
-            value_source = 0
-        
-        # Priority - stop production of phones if there is a priority phone case waiting
-        return value_source <= value_stock and value_stock==enabled_value_stock
-
-    def _game_production_guard(self, s2, s3):
-        # Synchronize with the production of phone cases
-        all_tokens = self.s1.queue.marking[0].value
-        time_enabled = [token for token in all_tokens if token.time <= self.SCgame.clock]
-        waiting_tokens = [token for token in all_tokens if token.time > self.SCgame.clock]
-        
-        if len(waiting_tokens) > 0:
-            time_untill_new = waiting_tokens[0].time - self.SCgame.clock
-        elif len(time_enabled) > 0:
-            time_untill_new = 0
-        elif len(all_tokens) == 0:
-            time_untill_new = 100
-        else: 
-            print("Error in game production guard")
-
-        # Constraints:
-        # Choice - if a new phone case is enabled in one time unit or less, hold game production
-        return time_untill_new > 0.5
 
     def _transportation(self, d1_token, truck):
         # Collect the relevant information
@@ -253,27 +203,6 @@ class SCMGameSimulation:
             truck["loading"] = False
             return [SimToken("ffil phone DE", delay=delay_truck), SimToken(truck, delay=delay_truck)]#delay=random.expovariate(1/truck_lt) if truck_uncertainty else truck_lt), SimToken(truck, delay=random.expovariate(1/truck_lt))]#delay_truck)]
 
-    def _transportation_guard(self, d1_token, truck):
-        # Collect the relevant information
-        all_tokens = self.d1.queue.marking[0].value
-        time_enabled = [token for token in all_tokens if token.time <= self.SCgame.clock]
-        waiting_tokens = [token for token in all_tokens if token.time > self.SCgame.clock]
-
-        # Check how long untill the next token is enabled
-        if len(waiting_tokens) > 0:
-            time_untill_new = waiting_tokens[0].time - self.SCgame.clock 
-        elif len(time_enabled) > 0:
-            time_untill_new = 0
-        elif len(all_tokens) == 0:
-            time_untill_new = 100
-        else: 
-            print("Error in transportation guard")
-
-        # Constraints: 
-        # Batching - truck should be loading, or have at least 3 tokens enabled. 
-        # Hold-batch - if it takes one time unit or less for a new token: wait
-        return (len(time_enabled) > 2 or truck["loading"] == True) and time_untill_new > 1
-
     def _demand_generator(self, demand, turn):
         # List of hubs that can incur demand
         hubs = ["ffil game NL",
@@ -284,7 +213,7 @@ class SCMGameSimulation:
         demand_loc = random.choice(hubs) # Randomly choose hub that incurs demand
         demand_count = random.randint(1, 6) # Demand uniform between 1-6
 
-        demand_tokens.clear() # No backorders
+        demand_tokens = [] # No backorders
 
         for count in range(demand_count): # Generate "count" tokens on demand location
             demand_token = SimToken(demand_loc, time=self.SCgame.clock)
@@ -292,7 +221,7 @@ class SCMGameSimulation:
 
         return [demand_tokens, SimToken("demand", delay=1)]
 
-    def run_simulation(self, simtime=1000, visualize=False, log=True, file_save=None, pattern_types=None):
+    def run_simulation(self, simtime=1000, visualize=False, log=True, file_save=None, pattern_types=None, analysis=False):
         """
         Run the simulation with the current parameterization.
         
@@ -326,22 +255,60 @@ class SCMGameSimulation:
         if visualize:
             v = Visualisation(self.SCgame)
             v.show()
-
-        print(f"Simulating with parameters: {self.parameters}")
-        print(f"Sourcing: {self.sourcing}")
-        print(f"Uncertainty: {self.uncertainty}")
-        print(f"Pattern types being reported: {pattern_types}")
-        
-        function_event_log_reporter = FunctionEventLogReporter(self.SCgame, file_save, separator=";")
-        self.SCgame.simulate(simtime, [function_event_log_reporter])
         
         #pattern_df = self.pattern_reporter.get_state_df()
 
         # Save logs to excel
         if log:
+            print(f"Simulating with parameters: {self.parameters}")
+            print(f"Sourcing: {self.sourcing}")
+            print(f"Uncertainty: {self.uncertainty}")
+            print(f"Pattern types being reported: {pattern_types}")
+        
+            function_event_log_reporter = FunctionEventLogReporter(self.SCgame, file_save, separator=";")
+            self.SCgame.simulate(simtime, [function_event_log_reporter])
             function_event_log_reporter.save_report()
             #self.pattern_reporter.to_excel(filename=file_save)
             print(f"Saved function event log to: {file_save}")
+
+        if analysis:
+
+            def is_max_enabled(queue):
+                queue_values = [token.value["priority"] for token in queue]
+                queue_enabled_values = [token.value["priority"] for token in queue if token.time <= self.SCgame.clock]
+
+                if len(queue_values) > 0:
+                    queue_max = max(queue_values)
+                else:
+                    queue_max = -1 # Not the same as queue_enabled_max
+                
+                if len(queue_enabled_values) > 0:
+                    queue_enabled_max = max(queue_enabled_values)
+                else:
+                    queue_enabled_max = 0
+                    
+                return queue_max == queue_enabled_max
+
+            def time_until_next_enabled(queue):
+                waiting_tokens = [token for token in queue if token.time > self.SCgame.clock]
+                
+                if len(waiting_tokens) > 0:
+                    return waiting_tokens[0].time - self.SCgame.clock
+                else:
+                    return 100000
+
+            alignment = GuardedAlignment(self.SCgame, file_save, separator=";")
+            result = alignment.alignment(functions=[lambda s3_queue: len(s3_queue), # Blocking
+                                                   lambda source_pc_queue: max(token["priority"] for token in source_pc_queue) if source_pc_queue else 0, # Priority
+                                                   lambda s1_queue: max(token["priority"] for token in s1_queue) if s1_queue else 0, 
+                                                   lambda s1_queue_tokens: is_max_enabled(s1_queue_tokens),
+                                                   lambda s1_queue_tokens: time_until_next_enabled(s1_queue_tokens),# Choice
+                                                   lambda d1_queue_tokens: len([token for token in d1_queue_tokens if token.time <= self.SCgame.clock]), # Hold-batch
+                                                   lambda d1_queue_tokens: time_until_next_enabled(d1_queue_tokens)])
+
+            functions = ["s3_queue_length", "max_source_pc_value", "max_s1_value", "max_s1_value_is_enabled", "s1 time until next enabled", "d1 enabledqueue length", "d1 queue time until next enabled"]
+            save_filename = f"scm_game_structural_alignment_"+file_save.split(".")[0]
+            alignment.save_alignment(result, save_filename, functions)
 
 # Run the default simulation
 if __name__ == "__main__":
@@ -356,7 +323,7 @@ if __name__ == "__main__":
         filename = f"scm_game_log_{i+1}.csv"
         print(f"Running simulation {i+1} of {nr_of_simulations}")
         simulation = SCMGameSimulation(sourcing, parameters, uncertainty)
-        simulation.run_simulation(simtime=1000, visualize=False, log=True, file_save=filename, pattern_types=pattern_types)
+        simulation.run_simulation(simtime=100, visualize=False, log=False, file_save=filename, pattern_types=pattern_types, analysis=True)
     print(f"Simulation {i+1} completed")
     print(f"{'='*50}")
     
