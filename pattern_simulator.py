@@ -1,177 +1,203 @@
-import inspect
-from simpn.simulator import SimToken, SimVar, SimVarQueue
-from simpn.reporters import EventLogReporter
-from tempfile import NamedTemporaryFile
+from simpn.simulator import SimProblem, SimToken, SimVarQueue, SimVar
+from simpn.reporters import Reporter
 from simpn.utils import seds
+
+import copy
+import inspect
 import pandas as pd
 import numpy as np
-import ast
 
-class Conformance:
-    """
-    A class that can calculate the conformance of an event log, produced via the EventLogReporter, to a process model, specified as a SimProblem with BPMN prototypes.
-    It has methods to calculate the fitness and the precision metrics.
-    Fitness and precision are calculated based on the edit distance similarity between traces from the event log and the process model.
-    The edit distance similarity between a trace t from the event log and a trace p from the process model is: the lowest number of insertions, deletions, and substitutions needed to transform t into p, divided by max(length of p, length of t).
-    The fitness of a trace t from the event log is the highest edit distance similarity between t and any trace p from the process model.
-    The fitness of the event log is the average fitness of all traces in the event log.
-    The precision is analogously computed as the average fitness of all traces in the process model with respect to the event log.
-    Preconditions:
-    - we assume that events are in the log in the order of their occurrence in time.
-    - the sim_problem must be in its initial state when the Conformance class is instantiated.
-    """
+class SimPattern(SimProblem):
 
-    def __init__(self, sim_problem, event_log, separator=",", case_id_column="case_id", task_column="task", sample_duration=1000):
+    def simulate(self, duration, reporter=None):
         """
-        Initializes the Conformance class with a SimProblem and an event log.
+        Executes a simulation run for the problem for the specified duration.
+        A simulation run executes events until this is no longer possible, or until the specified duration.
+        If at any moment multiple events can happen, one is selected at random.
+        At the end of the simulation run, the problem is in the state that is the result of the run.
+        If the reporter is set, its callback function is called with parameters (binding, time, event), and the result of the behavior of the event.
+        each time a event happens (for a binding at a moment in simulation time).
 
-        :param sim_problem: An instance of SimProblem containing the process model.
-        :param event_log: The filename of an event log.
-        :param separator: The separator used in the event log file (default is comma).
-        :param case_id_column: The name of the column in the event log that contains the case IDs (default is "case_id").
-        :param task_column: The name of the column in the event log that contains the task labels (default is "task").
-        :param sample_duration: The time the simulator will be run to generate traces to calculate the fitness/ precision over (default is 1000).
+        :param duration: the duration of the simulation.
+        :param reporter: a class that implements a callback function, which is called each time a event happens. reporter can also be a list of reporters, in which case the callback function of each reporter is called.
         """
-        self.INITIAL_STATE = "initial state"
-        self.sim_problem = sim_problem
-        self.sim_problem.store_checkpoint(self.INITIAL_STATE)  # Store the initial state of the process model
-        self.event_log = event_log
-        self.separator = separator
-        self.case_id_column = case_id_column
-        self.task_column = task_column
-        self.sample_duration = sample_duration
-        self.traces_sampled_from_process = self.generate_traces(duration=sample_duration)
-        self.sim_problem.restore_checkpoint(self.INITIAL_STATE)  # Restore the initial state after generating traces
-        self.traces_extracted_from_log = self.extract_traces(event_log, separator=separator, case_id_column=case_id_column, task_column=task_column)
-    
-    def extract_traces(self, event_log, separator=",", case_id_column="case_id", task_column="task"):
+        active_model = True
+        while self.clock <= duration and active_model:
+            bindings = self.bindings()
+            if len(bindings) > 0:
+                
+                timed_binding = self.binding_priority(bindings)
+                timed_binding_copy = (copy.deepcopy(timed_binding[0]), timed_binding[1], timed_binding[2])
+                # Watch out! The binding of queues will change after firing, resulting in incorrect reporting! Use deepcopy to mitigate
+                # TODO: find a better way to handle this
+                # print("timed binding: ", timed_binding)
+                result = self.fire_result(timed_binding)
+                #print("timed binding after firing: ", timed_binding)
+
+                if reporter is not None:
+                    if type(reporter) == list:
+                        for r in reporter:
+                            r.callback(timed_binding_copy, result)
+                    else:
+                        reporter.callback(timed_binding_copy, result)
+                
+            else:
+                active_model = False
+
+    def fire_result(self, timed_binding):
         """
-        Extracts traces from the event log.
-        The result is a dictionary of trace -> frequency of occurrence, where each trace is a list of task labels.
-
-        :return: A dictionary of traces with the frequency of their occurrence.
+        Fires the specified timed binding.
+        Binding is a tuple ([(place, token), (place, token), ...], time, event)
+        Return the result of the behavior of the event.
         """
-        with open(event_log, 'r') as file:
-            header = file.readline().strip().split(separator)
-            case_id_index = header.index(case_id_column)
-            task_index = header.index(task_column)
+        (binding, time, event) = timed_binding
 
-            # A dictionary case_id -> list of tasks
-            cases = {}
+        variable_assignment = []
+        for (place, token) in binding:
+            # remove tokens from incoming places
+            place.remove_token(token)
+            # assign values to the variables on the arcs
+            variable_assignment.append(token.value)
 
-            for line in file:
-                if line.strip():
-                    parts = line.strip().split(separator)
-                    case_id = parts[case_id_index]
-                    task = parts[task_index]
+        # calculate the result of the behavior of the event
+        try:
+            result = event.behavior(*variable_assignment)
+        except Exception as e:
+            raise TypeError("Event " + str(event) + ": behavior function generates exception for values " + str(variable_assignment) + ".") from e
+        if self._debugging:
+            if type(result) != list:
+                raise TypeError("Event " + str(event) + ": behavior function does not generate a list for values " + str(variable_assignment) + ".")
+            if len(result) != len(event.outgoing):
+                raise TypeError("Event " + str(event) + ": behavior function does not generate as many values as there are output variables for values " + str(variable_assignment) + ".")
+            i = 0
+            for r in result:
+                if r is not None:
+                    if isinstance(event.outgoing[i], SimVarQueue):
+                        if not isinstance(r, list):
+                            raise TypeError("Event " + str(event) + ": does not generate a queue for variable " + str(event.outgoing[i]) + " for values " + str(variable_assignment) + ".")
+                    else:
+                        if not isinstance(r, SimToken):
+                            raise TypeError("Event " + str(event) + ": does not generate a token for variable " + str(event.outgoing[i]) + " for values " + str(variable_assignment) + ".")
+                        if not (type(r.delay) is int or type(r.delay) is float):
+                            raise TypeError("Event " + str(event) + ": does not generate a numeric value for the delay of variable " + str(event.outgoing[i]) + " for values " + str(variable_assignment) + ".")
+                        if not (type(r.time) is int or type(r.time) is float):
+                            raise TypeError("Event " + str(event) + ": does not generate a numeric value for the time of variable " + str(event.outgoing[i]) + " for values " + str(variable_assignment) + ".")
+                i += 1
 
-                    if case_id not in cases:
-                        cases[case_id] = []
-                    cases[case_id].append(task)
-
-            # Convert cases to traces
-            traces = {}
-            for case_id, tasks in cases.items():
-                trace = tuple(tasks)
-                if trace not in traces:
-                    traces[trace] = 0
-                traces[trace] += 1
-
-        return traces
-
-    def generate_traces(self, duration=1000):
-        """
-        Generates traces from the SimProblem's process model.
-        The result is a dictionary of trace -> frequency of occurrence, where each trace is a list of task labels.
-
-        :return: A dictionary of traces with the frequency of their occurrence.
-        """
-
-        # We can generate traces by simulating the process model, storing the event log in a temporary file, and then extracting the traces from that log.
-        with NamedTemporaryFile() as temp_log:            
-            reporter = EventLogReporter(temp_log.name, separator=self.separator)
-            self.sim_problem.restore_checkpoint(self.INITIAL_STATE)
-            self.sim_problem.simulate(duration, reporter)
-            temp_log.flush()
-
-            # Now extract traces from the temporary log file
-            traces = self.extract_traces(temp_log.name, separator=self.separator)
-
-            # Clean up the temporary file
-            temp_log.close()
-
-            return traces
-
-    def edit_distance_similarity(self, trace1, trace2):
-        """
-        Calculates the edit distance similarity between two traces.
-        The edit distance similarity is defined as the lowest number of insertions, deletions, and substitutions needed to transform trace1 into trace2, divided by max(length of trace1, length of trace2).
-
-        :param trace1: A list representing the first trace.
-        :param trace2: A list representing the second trace.
-        :return: A float representing the edit distance similarity.
-        """
-        len1 = len(trace1)
-        len2 = len(trace2)
-
-        # Create a distance matrix
-        dp = [[0] * (len2 + 1) for _ in range(len1 + 1)]
-
-        for i in range(len1 + 1):
-            for j in range(len2 + 1):
-                if i == 0:
-                    dp[i][j] = j
-                elif j == 0:
-                    dp[i][j] = i
-                elif trace1[i - 1] == trace2[j - 1]:
-                    dp[i][j] = dp[i - 1][j - 1]
+        for i in range(len(result)):
+            if result[i] is not None:
+                if isinstance(event.outgoing[i], SimVarQueue):
+                    event.outgoing[i].add_token(result[i])
                 else:
-                    dp[i][j] = min(dp[i - 1][j] + 1,      # Deletion
-                                   dp[i][j - 1] + 1,      # Insertion
-                                   dp[i - 1][j - 1] + 1)
-        edit_distance = dp[len1][len2]
-        max_length = max(len1, len2)
-        if max_length == 0:
-            return 1.0
-        return 1 - (edit_distance / max_length)  # Return similarity as a value
+                    if result[i].time > 0 and result[i].delay == 0:
+                        raise TypeError("Deprecated functionality: Event " + str(event) + ": generates a token with a delay of 0, but a time > 0, for variable " + str(event.outgoing[i]) + " for values " + str(variable_assignment) + ". It seems you are using the time of the token to represent the delay.")
+                    token = SimToken(result[i].value, time=self.clock + result[i].delay)
+                    event.outgoing[i].add_token(token)
 
-    def calculate_fit(self, from_traces, to_traces):
-        """
-        Calculates the fitness of a set of traces with respect to another set of traces.
-        The fitness is defined as the average similarity of each trace in from_traces to the best matching trace in to_traces.
-        :param from_traces: A dictionary of traces with their frequencies.
-        :param to_traces: A dictionary of traces with their frequencies.
-        :return: A float representing the fitness value.
-        """
-        fitness_values = []
-
-        for from_trace, from_frequency in from_traces.items():
-            max_similarity = 0.0
-            for to_trace in to_traces.keys():
-                similarity = self.edit_distance_similarity(from_trace, to_trace)
-                if similarity > max_similarity:
-                    max_similarity = similarity
-            fitness_values.append(max_similarity * from_frequency)
-
-        if not fitness_values:
-            return 0.0
-        return sum(fitness_values) / sum(from_traces.values())
-
-    def calculate_fitness(self):
-        """
-        Calculates the fitness of the event log with respect to the process model.
-
-        :return: A float representing the fitness value.
-        """
-        return self.calculate_fit(self.traces_extracted_from_log, self.traces_sampled_from_process)        
+        return result
     
-    def calculate_precision(self):
+    def advance_clock(self):
         """
-        Calculates the precision of the event log with respect to the process model.
-        :return: A float representing the precision value.
+        Advances the clock to the earliest time at which there is a new timed binding.
         """
-        return self.calculate_fit(self.traces_sampled_from_process, self.traces_extracted_from_log)
+        min_enabling_time = None
 
+        # find the earliest enabling time for an event's incoming markings
+        timings = dict()
+        for ev in self.events:
+            smallest_next = []
+            skip = False
+            added = False
+            
+            # identify when the earlier token could be used from places 
+            # of the event; note: place.marking may not be ordered by
+            # time, need to check for each place and otherwise walk the 
+            # place's marking
+            for place in ev.incoming:
+                try:
+                    if place.marking[0].time > self.clock:
+                        smallest_next.append(place.marking[0].time) # Ensure going forward in time instead of getting stuck in constrained events
+                        added = True
+                except:
+                    skip = True
+            
+            if (skip or not added):
+                timings[ev] = 0
+                continue
+            
+            # only keep the latest of the set of early tokens across places
+            smallest_largest = max(smallest_next)
+            timings[ev] = smallest_largest
+
+            #if (smallest_largest == 0):
+            #   continue
+
+            # keep track of the smallest next possible clock
+            if (smallest_largest is not None) \
+                and (min_enabling_time is None \
+                        or smallest_largest < min_enabling_time):
+                min_enabling_time = smallest_largest 
+
+        # timed bindings are only enabled if they have time <= clock
+        # if there are no such bindings, set the clock to the earliest time 
+        # at which there are
+        if min_enabling_time is not None and min_enabling_time > self.clock:
+            self.clock = min_enabling_time
+
+class BehaviorEventLogReporter(Reporter):
+
+    def __init__(self, sim_problem, filename, separator=","):
+        self.sim_problem = sim_problem
+        self.filename = filename
+        self.function_report = {"event": [], "start_time": [], "completion_time": []}
+        self.separator = separator
+
+        for place in self.sim_problem.places:
+            self.function_report[place.get_id()+"<incoming>"] = []
+            self.function_report[place.get_id()+"<outgoing>"] = []
+
+    def callback(self, timed_binding, result):
+        (binding, time, event) = timed_binding        
+
+        print("|event: ", event.get_id(), "|time: ", time, "|incoming: ", binding, "|result: ", result,"|")
+        print("")
+
+        # Add values for columns that have been associated with a value in this callback
+        self.function_report["event"].append(event.get_id())
+        self.function_report["start_time"].append(round(time, 2))
+        
+        # Use the longest delay as completion time for the full event
+        delays = []
+        for i in range(len(result)):
+            try:
+                delays.append(result[i].delay)
+            except:
+                continue
+        max_delay = max(delays) if len(delays) > 0 else 0
+        self.function_report["completion_time"].append(round(time+max_delay,2)) #[result[i].delay for i in range(len(result) if type(result[i]) != SimVarQueue else 0)]), 2)) # TODO: see how to get the delay in a clean way
+
+        # Store incoming and outgoing values
+        for i, place in enumerate(event.incoming):
+            if ".queue" in place.get_id():
+                self.function_report[place.get_id()[:-6]+"<incoming>"].append(binding[i][1].value)
+            else:
+                self.function_report[place.get_id()+"<incoming>"].append(binding[i][1].value)
+        
+        for i, place in enumerate(event.outgoing):
+
+            if ".queue" in place.get_id():
+                self.function_report[place.get_id()[:-6]+"<outgoing>"].append(result[i])
+            else:
+                self.function_report[place.get_id()+"<outgoing>"].append(result[i].value) # TODO: see how to get the outgoing values in a clean way
+        
+        # Add None values for columns that have not been associated with a value in this callback
+        for column_name in self.function_report.keys():
+            if len(self.function_report[column_name]) != len(self.function_report["event"]):
+                self.function_report[column_name].append(None)
+
+    def save_report(self):
+        function_report_df = pd.DataFrame(self.function_report)
+        function_report_df.to_csv(self.filename, sep=self.separator, index=False)
 
 class GuardedAlignment:
     """
@@ -202,7 +228,7 @@ class GuardedAlignment:
         self.sim_problem = sim_problem
         self.event_log = event_log
         self.separator = separator
-        self.events = [] # a tuple (event, time, end_time, log_binding, log_result), where log_binding is a dictionary of variable -> value and log_result is a dictionary of variable -> value
+        self.events = [] # a tuple (event, start_time, completion_time, log_binding, log_result), where log_binding is a dictionary of variable -> value and log_result is a dictionary of variable -> value
 
         # read the event log from file.
         # check if the event log is valid, meaning:
@@ -244,7 +270,6 @@ class GuardedAlignment:
                                 try:
                                     log_binding[index2label[i]] = eval(parts[i])
                                 except:
-                                    print("Error evaluating log binding: ", parts[i])
                                     log_binding[index2label[i]] = parts[i]
                             else:
                                 log_binding[index2label[i]] = None
@@ -253,7 +278,6 @@ class GuardedAlignment:
                                 try:
                                     log_result[index2label[i]] = eval(parts[i])
                                 except:
-                                    print("Error evaluating log result: ", parts[i])
                                     log_result[index2label[i]] = parts[i]
                             else:
                                 log_result[index2label[i]] = None
@@ -310,19 +334,15 @@ class GuardedAlignment:
         self.sim_problem.store_checkpoint(self.INITIAL_STATE)  # Store the initial state of the process model
         
         # we need to evaluate the functions on each model binding before firing the transition, otherwise we use the wrong values (the ones after the decision was already made)
-        #for i, log_event in enumerate(log_events_at_time):
         for i, log_event in enumerate(self.events):
             
             model_bindings = self.sim_problem.bindings()
-            print("--------------------------------")
-            print("Considering log event: ", log_event[0], ", at time: ", self.sim_problem.clock)
-            print("Current model bindings: ", model_bindings)
+            
             # evaluate the functions on each model binding
             function_results = self.calculate_functions(model_bindings, log_event, functions)
 
             # when bindings are enabled before log event, add them to the allignment as False
             while log_event[1] > self.sim_problem.clock:
-                #print("There are model bindings before log time: t=", log_event[1])
                 model_bindings = self.sim_problem.bindings()
                 function_results = self.calculate_functions(model_bindings, log_event, functions)
                 for j in range(len(model_bindings)):
@@ -341,26 +361,21 @@ class GuardedAlignment:
 
             # if a matching binding exists, add the fired event, the firing time (which is the current model clock), and True to the alignment
             if matching_binding_exists:
-                #print("There is a log binding with a matching model binding")
                 alignment.append([log_event[0], self.sim_problem.clock, True] + function_results[0])  # TODO: we take the result of the first model binding, not sure if that is correct
             
             # if a matching binding does not exist, add the log event, the firing time, and False to the alignment
-            else:
-                #print("There is a log binding with no matching model binding")
+            else: 
                 alignment.append([log_event[0], self.sim_problem.clock, False] + function_results[0])
             
             # if there are unmatched model bindings left, add them to the alignment as False
             if (len(model_bindings) > 1 and i + 1 < len(self.events) and self.events[i + 1][1] > log_event[1]):
-                #print("There are model bindings with no matching log binding")
                 
                 for j in range(len(model_bindings)):
                     if str(used_tokens[0].value) in str(model_bindings[j][0]): # If any used tokens are in the model binding, skip it
-                        #print("Model binding already fired")
                         continue
                     
                     alignment_row = [model_bindings[j][2].get_id(), self.sim_problem.clock, False] + function_results[j]
                     if alignment_row not in alignment:
-                        #print("Adding model binding to alignment")
                         alignment.append(alignment_row)
         
         self.sim_problem.restore_checkpoint(self.INITIAL_STATE)  # Restore the initial state after generating traces
@@ -406,12 +421,11 @@ class GuardedAlignment:
             else:
                 log_binding_value = log_binding.get(var.get_id())
 
-            token = self.closest_token(var, log_binding_value) # TODO: make sure this works for queues
+            token = self.closest_token(var, log_binding_value) 
             tokens.append(token)
 
-            #print("original marking: ", var.marking)
             var.remove_token(token)
-            #print("marking after removal: ", var.marking)
+
             # instead, construct the assignment from the log binding
             variable_assignment.append(log_binding_value)
         #fire the transition and process the result
@@ -420,16 +434,11 @@ class GuardedAlignment:
         for i, var in enumerate(model_transition.outgoing):
             if result_model[i] is not None:
                 if isinstance(model_transition.outgoing[i], SimVarQueue):
-                    #print(type(result_model[i][0]))
                     queue_tokens = self.log_queue_parser(log_result[var.get_id()[:-6]])
-                    #print("adding: ", queue_tokens)
                     model_transition.outgoing[i].add_token(queue_tokens)
-                    #print("updated marking: ", model_transition.outgoing[i].marking)
                 else:
                     token = SimToken(log_result[var.get_id()], time=self.sim_problem.clock+delay) # TODO: add generated delay
-                    #print("adding: ", token)
                     model_transition.outgoing[i].add_token(token)
-                    #print("updated marking: ", model_transition.outgoing[i].marking)
         
         return tokens
 

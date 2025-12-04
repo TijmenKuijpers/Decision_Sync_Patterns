@@ -1,18 +1,15 @@
 import random
-import pandas as pd
-from datetime import datetime
 import sys
-import os
+from pathlib import Path
 
-from simpn.simulator import SimProblem, SimToken
+# Add parent directory to path to import pattern_simulator
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from simpn.simulator import SimToken
+from pattern_simulator import SimPattern, BehaviorEventLogReporter
 from simpn.visualisation import Visualisation
-from simpn.reporters import FunctionEventLogReporter
 
-# Add the Patterns directory to the path to import analysis_branch
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from analysis_branch import GuardedAlignment
-
-production_line = SimProblem(binding_priority = SimProblem.PRIORITY_BINDING)
+# Set up the production line model
+production_line = SimPattern(binding_priority = SimPattern.PRIORITY_BINDING)
 
 # Define the variables that make up the state-space of the system
 arrival = production_line.add_var("arrival")
@@ -57,8 +54,7 @@ resource.put({"worker_id": 1})
 # After simulation, print some statistics
 visualize = False
 simulate = True
-log = True
-analysis = False
+log = False
 
 if visualize:
     v = Visualisation(production_line)
@@ -66,15 +62,11 @@ if visualize:
 
 if simulate:
     simtime = 10000
-    function_event_log_reporter = FunctionEventLogReporter(production_line, "C:/Users/20183272/OneDrive - TU Eindhoven/Documents/PhD IS/Papers/Decision Synchronization Patterns/Modeling/Patterns/Priority/priority_function_log.csv", separator=";")
+    function_event_log_reporter = BehaviorEventLogReporter(production_line, "priority_function_log.csv", separator=";")
     production_line.simulate(simtime, [function_event_log_reporter])
+    
     if log:
         function_event_log_reporter.save_report()
 
-    if analysis:
-        alignment = GuardedAlignment(production_line, "C:/Users/20183272/OneDrive - TU Eindhoven/Documents/PhD IS/Papers/Decision Synchronization Patterns/Modeling/Patterns/Priority/priority_function_log.csv", separator=";")
-        result = alignment.alignment(functions=[lambda arrival_queue: max(a["value"] for a in arrival_queue) if arrival_queue else 0, 
-                                     lambda q1_queue: max(e["value"] for e in q1_queue) if q1_queue else 0])
-        functions = ["max_arrival_value", "max_q1_value", "max_arrival_value_enabled", "max_q1_value_enabled"]
-        alignment.save_alignment(result, "C:/Users/20183272/OneDrive - TU Eindhoven/Documents/PhD IS/Papers/Decision Synchronization Patterns/Modeling/Patterns/Priority/priority_alignment_result", functions)
+
 

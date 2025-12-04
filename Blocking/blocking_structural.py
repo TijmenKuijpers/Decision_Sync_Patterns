@@ -1,19 +1,15 @@
-import random
-import pandas as pd
-from datetime import datetime
 import numpy as np
 import sys
-import os
+from pathlib import Path
 
-from simpn.simulator import SimProblem, SimToken
-from simpn.reporters import FunctionEventLogReporter
+# Add parent directory to path to import pattern_simulator
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from simpn.simulator import SimToken
+from pattern_simulator import SimPattern, BehaviorEventLogReporter, GuardedAlignment
 from simpn.visualisation import Visualisation
 
-# Add the Patterns directory to the path to import analysis_branch
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from analysis_branch import GuardedAlignment
-
-production_line = SimProblem(binding_priority = SimProblem.PRIORITY_BINDING)
+# Set up the production line model
+production_line = SimPattern(binding_priority = SimPattern.PRIORITY_BINDING)
 
 # Define the variables that make up the state-space of the system
 arrival = production_line.add_var("arrival")
@@ -22,19 +18,13 @@ r1 = production_line.add_var("r1")
 r2 = production_line.add_var("r2")
 
 # Define the events that can change the state-space of the system
-def resource_delay(q, r):
-    # Generate a delay with exponential distribution
-    delay = np.random.exponential(scale=10)
-
-    return [SimToken(r, delay=delay)]
-
 production_line.add_event([arrival, r1], [arrival, r1, q1], 
                           behavior = lambda a, r: [SimToken({"job": a["job"]+1}, delay=5.0), SimToken(r, delay=5.0), SimToken(a, delay=5.0)], 
                           guard = None,#lambda a, r: len([token for token in q1.queue.marking[0].value]) < 5,
                           name="pre_processing")
 
 production_line.add_event([q1, r2], [r2], 
-                          behavior= resource_delay,
+                          behavior= lambda q, r: [SimToken(r, delay=round(np.random.exponential(scale=10), 2))],
                           name="processing")
 
 # Describe the initial state of the system
@@ -44,7 +34,7 @@ r2.put({"machine_id": 2})
 
 # After simulation, print some statistics
 visualize = False
-simulate = True
+simulate = False
 log = False
 analysis = True
 
@@ -54,22 +44,18 @@ if visualize:
 
 if simulate:
     simtime = 100
-    function_event_log_reporter = FunctionEventLogReporter(production_line, "C:/Users/20183272/OneDrive - TU Eindhoven/Documents/PhD IS/Papers/Decision Synchronization Patterns/Modeling/Patterns/Blocking/blocking_function_log.csv", separator=";")
-    
-    if not analysis:
-        production_line.simulate(simtime, [function_event_log_reporter])
-
+    function_event_log_reporter = BehaviorEventLogReporter(production_line, "blocking_function_log.csv", separator=";")
+    production_line.simulate(simtime, [function_event_log_reporter])
     # Save logs to excel
     if log:
         function_event_log_reporter.save_report()
-        print("Saved")
     
-    # analyse guarded alignment
-    if analysis:
-        alignment = GuardedAlignment(production_line, "C:/Users/20183272/OneDrive - TU Eindhoven/Documents/PhD IS/Papers/Decision Synchronization Patterns/Modeling/Patterns/Blocking/blocking_function_log.csv", separator=";")
-        result = alignment.alignment(functions=[lambda arrival_queue: len(arrival_queue), 
-                                     lambda q1_queue: len(q1_queue)])
-        
-        functions = ["arrival queue length", "q1 queue length"]
-        alignment.save_alignment(result, "C:/Users/20183272/OneDrive - TU Eindhoven/Documents/PhD IS/Papers/Decision Synchronization Patterns/Modeling/Patterns/Blocking/blocking_structural_alignment_result", functions)
+# analyse guarded alignment
+if analysis:
+    alignment = GuardedAlignment(production_line, "blocking_function_log.csv", separator=";")
+    result = alignment.alignment(functions=[lambda arrival_queue: len(arrival_queue), 
+                                    lambda q1_queue: len(q1_queue)])
+    
+    functions = ["arrival queue length", "q1 queue length"]
+    alignment.save_alignment(result, "blocking_structural_alignment_result", functions)
 

@@ -1,17 +1,14 @@
 from sc_prototypes import SCOrder, SCDemand, SCStock
-from simpn.simulator import SimProblem, SimToken
+from simpn.simulator import SimToken
 from simpn.visualisation import Visualisation
-from simpn.reporters import FunctionEventLogReporter
 import random
-from itertools import combinations
-from datetime import datetime
-import pandas as pd
 import sys
-import os
+from pathlib import Path
 
-# Add the parent directory to the path to import pattern_reporter
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pattern_reporter import PatternReporter, ProgressReporter
+# Add parent directory to path to import pattern_simulator
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from pattern_simulator import SimPattern, BehaviorEventLogReporter
+from simpn.visualisation import Visualisation
 
 class SCMGameSimulation:
     """
@@ -34,7 +31,7 @@ class SCMGameSimulation:
         self.initial_stock = initial_stock or {"s1": 2, "s2": 4, "s3": 2, "d1": 3, "d2": 0, "d3": 0}
         
         # Initialize simulation problem
-        self.SCgame = SimProblem()
+        self.SCgame = SimPattern()
         self.pattern_reporter = None
         
         # Initialize places and variables
@@ -179,16 +176,6 @@ class SCMGameSimulation:
 
         return [SimToken(p, delay=delay), SimToken(p, delay=delay)]
     
-    #def _phone_order_guard(self, p):
-        #s1_queue = self.s1.queue.marking[0].value
-        # Blocking - if there are 3 tokens in phone case stock, block order
-        #return len(s1_queue) < 3
-
-    #def _chip_order_guard(self, p):
-        #s2_queue = self.s2.queue.marking[0].value
-        # Blocking - if there are 6 tokens in chip stock, block order
-        #return len(s2_queue) < 3
-
     def _game_order_guard(self, p):
         s3_queue = self.s3.queue.marking[0].value
         # Blocking - if there are 3 tokens in game case stock, block order
@@ -306,22 +293,6 @@ class SCMGameSimulation:
         Returns:
         tuple - (state_df, filename) where filename is None if log=False
         """
-        # Default pattern types if not specified
-        if pattern_types is None:
-            pattern_types = ["blocking", "hold-batch", "choice"]
-        
-        # Create reporter for state logging
-        self.pattern_reporter = PatternReporter(
-            SimProblem=self.SCgame,
-            attributes=['priority'],  # Attributes to track for priority patterns
-            pattern_types=pattern_types,
-            skip_places=["log_timer", "truck", "turn", "demand"],
-            skip_events=["timer", "_demand_generator", 'ffill 1', 'ffill 2', 'ffill 3', 
-                        "ffill 1_constrained", "ffill 2_constrained", "ffill 3_constrained",
-                        'order phone case<task:complete>', 'order chip<task:complete>', 'order game case<task:complete>'],
-            simulation_name="scm_game"
-        )
-        #self.progress_reporter = ProgressReporter(simtime, print_interval=0.05)
         
         if visualize:
             v = Visualisation(self.SCgame)
@@ -332,15 +303,12 @@ class SCMGameSimulation:
         print(f"Uncertainty: {self.uncertainty}")
         print(f"Pattern types being reported: {pattern_types}")
         
-        function_event_log_reporter = FunctionEventLogReporter(self.SCgame, file_save, separator=";")
+        function_event_log_reporter = BehaviorEventLogReporter(self.SCgame, file_save, separator=";")
         self.SCgame.simulate(simtime, [function_event_log_reporter])
-        
-        #pattern_df = self.pattern_reporter.get_state_df()
 
         # Save logs to excel
         if log:
             function_event_log_reporter.save_report()
-            #self.pattern_reporter.to_excel(filename=file_save)
             print(f"Saved function event log to: {file_save}")
 
 # Run the default simulation
@@ -359,13 +327,4 @@ if __name__ == "__main__":
         simulation.run_simulation(simtime=1000, visualize=False, log=True, file_save=filename, pattern_types=pattern_types)
     print(f"Simulation {i+1} completed")
     print(f"{'='*50}")
-    
-    #filename = f"scm_game_log_prio_updated.xlsx"
-    #simulation = SCMGameSimulation(sourcing, parameters, uncertainty)
-    #pattern_df = simulation.run_simulation(simtime=1000, visualize=False, log=True, file_save=filename, pattern_types=pattern_types)
-       
-
-    #print("\nProcess States:")
-    #print(pattern_df.head())
-    #print(f"Saved to excel: {filename}")
 

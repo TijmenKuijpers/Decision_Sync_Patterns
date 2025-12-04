@@ -1,20 +1,15 @@
-import random
-import pandas as pd
-import numpy as np
-from datetime import datetime
 import sys
-import os
+from pathlib import Path
 
-from simpn.simulator import SimProblem, SimToken
-from simpn.reporters import  FunctionEventLogReporter
+# Add parent directory to path to import pattern_simulator
+sys.path.insert(0, str(Path(__file__).parent.parent))
+import numpy as np
+from simpn.simulator import SimToken
+from pattern_simulator import SimPattern, BehaviorEventLogReporter
 from simpn.visualisation import Visualisation
 
-
-# Add the parent directory to the path to import pattern_reporter
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from analysis_branch import GuardedAlignment
-
-assembly_system = SimProblem()
+# Set up the assembly system model
+assembly_system = SimPattern()
 
 # Define the variables that make up the state-space of the system
 arrival_chip = assembly_system.add_var("chip supply")
@@ -87,8 +82,7 @@ phone_resource.put({"phone_id": 1})
 # After simulation, print some statistics
 visualize = False
 simulate = True
-log = True
-analysis = False
+log = False
 
 if visualize:
     v = Visualisation(assembly_system)
@@ -96,21 +90,10 @@ if visualize:
 
 if simulate:
     simtime = 10000
-    function_event_log_reporter = FunctionEventLogReporter(assembly_system, "C:/Users/20183272/OneDrive - TU Eindhoven/Documents/PhD IS/Papers/Decision Synchronization Patterns/Modeling/Patterns/Choice/choice_function_log.csv", separator=";")
+    function_event_log_reporter = BehaviorEventLogReporter(assembly_system, "choice_function_log.csv", separator=";")
     
-    if not analysis:
-        assembly_system.simulate(simtime, [function_event_log_reporter])
+    assembly_system.simulate(simtime, [function_event_log_reporter])
 
     # Save logs to excel
     if log:
         function_event_log_reporter.save_report()
-        print("Saved")
-    
-    # analyse guarded alignment
-    if analysis:
-        alignment = GuardedAlignment(assembly_system, "C:/Users/20183272/OneDrive - TU Eindhoven/Documents/PhD IS/Papers/Decision Synchronization Patterns/Modeling/Patterns/Choice/choice_function_log.csv", separator=";")
-        result = alignment.alignment(functions=[lambda arrival_queue: len(arrival_queue), 
-                                     lambda q1_queue: len(q1_queue)])
-        
-        functions = ["arrival queue length", "q1 queue length"]
-        alignment.save_alignment(result, "C:/Users/20183272/OneDrive - TU Eindhoven/Documents/PhD IS/Papers/Decision Synchronization Patterns/Modeling/Patterns/Choice/choice_structural_alignment_result", functions)

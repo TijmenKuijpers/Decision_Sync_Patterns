@@ -1,19 +1,16 @@
-from simpn.simulator import SimProblem, SimToken
-from simpn.reporters import SimpleReporter
-from simpn.reporters import Reporter, FunctionEventLogReporter
-from simpn.visualisation import Visualisation
-import random
-import pandas as pd
-import numpy as np
-from datetime import datetime
 import sys
-import os
+from pathlib import Path
 
-# Add the parent directory to the path to import analysis_branch
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from analysis_branch import GuardedAlignment
+# Add parent directory to path to import pattern_simulator
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-assembly_system = SimProblem()
+import numpy as np
+from simpn.simulator import SimToken
+from pattern_simulator import SimPattern, BehaviorEventLogReporter, GuardedAlignment
+from simpn.visualisation import Visualisation
+
+# Set up the assembly system model
+assembly_system = SimPattern()
 
 # Define the variables that make up the state-space of the system
 arrival_chip = assembly_system.add_var("chip supply")
@@ -85,7 +82,7 @@ phone_resource.put({"phone_id": 1})
 
 # After simulation, print some statistics
 visualize = False
-simulate = True
+simulate = False
 log = False
 analysis = True
 
@@ -94,30 +91,27 @@ if visualize:
     v.show()
 
 if simulate:
-    simtime = 100
-    function_event_log_reporter = FunctionEventLogReporter(assembly_system, "C:/Users/20183272/OneDrive - TU Eindhoven/Documents/PhD IS/Papers/Decision Synchronization Patterns/Modeling/Patterns/Choice/choice_function_log.csv", separator=";")
-    
-    if not analysis:
-        assembly_system.simulate(simtime, [function_event_log_reporter])
+    simtime = 10000
+    function_event_log_reporter = BehaviorEventLogReporter(assembly_system, "choice_function_log.csv", separator=";")
+    assembly_system.simulate(simtime, [function_event_log_reporter])
 
     # Save logs to excel
     if log:
         function_event_log_reporter.save_report()
-        print("Saved")
     
-    # analyse guarded alignment
-    if analysis:
+# analyse guarded alignment
+if analysis:
 
-        def time_until_next_enabled(queue):
-            waiting_tokens = [token for token in queue if token.time > assembly_system.clock]
-            
-            if len(waiting_tokens) > 0:
-                return waiting_tokens[0].time - assembly_system.clock
-            else:
-                return 100000
-
-        alignment = GuardedAlignment(assembly_system, "C:/Users/20183272/OneDrive - TU Eindhoven/Documents/PhD IS/Papers/Decision Synchronization Patterns/Modeling/Patterns/Choice/choice_function_log.csv", separator=";")
-        result = alignment.alignment(functions=[lambda stock_phone_case_queue_tokens: time_until_next_enabled(stock_phone_case_queue_tokens)])
+    def time_until_next_enabled(queue):
+        waiting_tokens = [token for token in queue if token.time > assembly_system.clock]
         
-        functions = ["stock phone case time until next enabled"]
-        alignment.save_alignment(result, "C:/Users/20183272/OneDrive - TU Eindhoven/Documents/PhD IS/Papers/Decision Synchronization Patterns/Modeling/Patterns/Choice/choice_structural_alignment_result", functions)
+        if len(waiting_tokens) > 0:
+            return waiting_tokens[0].time - assembly_system.clock
+        else:
+            return 100000
+
+    alignment = GuardedAlignment(assembly_system, "choice_function_log.csv", separator=";")
+    result = alignment.alignment(functions=[lambda stock_phone_case_queue_tokens: time_until_next_enabled(stock_phone_case_queue_tokens)])
+    
+    functions = ["stock phone case time until next enabled"]
+    alignment.save_alignment(result, "choice_structural_alignment_result", functions)

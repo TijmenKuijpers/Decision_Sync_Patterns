@@ -3,7 +3,6 @@ import numpy as np
 import seaborn as sns
 from datetime import datetime
 import matplotlib.pyplot as plt
-
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, accuracy_score
@@ -24,11 +23,10 @@ class DataPreprocessor:
         df = df[df['Event'].isin([transition])]
 
         # Apply preprocessing
-        
         df = self._apply_pattern_specific_cleaning(df, pn, transition, pattern)
         
         # Save preprocessed dataframe to excel with timestamp
-        self.save_preprocessed_data(df, transition, pattern)
+        #self.save_preprocessed_data(df, transition, pattern)
 
         # Create observation (X) and target (y) variables
         X, y = self._create_features_and_targets(df, transition)
@@ -408,7 +406,7 @@ class DecisionTreeAnalyzer:
         self.trainer = DecisionTreeTrainer(
             max_depth=self.config['max_depth'],
             min_samples_split=5,
-            save_visualizations=True
+            save_visualizations=False
         )
     
     def run_analysis(self):
@@ -463,11 +461,11 @@ class DecisionTreeAnalyzer:
 def main():
     """Main function to run the decision tree analysis."""
     experiments = 10
+
     file_save = "scm_game_log"
     for i in range(experiments):
-        file_name = f"scm_game_structural_alignment_{file_save}_{i+1}.xlsx"
-        #file_path = f"C:/Users/20183272/OneDrive - TU Eindhoven/Documents/PhD IS/Papers/Decision Synchronization Patterns/Modeling/Patterns/SCM_game/{file_name}"
-        analyzer = DecisionTreeAnalyzer(file_name)#path)
+        file_name = f"SCM_game/scm_game_structural_alignment_{file_save}_{i+1}.xlsx"
+        analyzer = DecisionTreeAnalyzer(file_name)
         analyzer.run_analysis()
 
 if __name__ == "__main__":
